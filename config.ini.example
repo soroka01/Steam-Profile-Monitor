@@ -1,0 +1,27 @@
+[telegram]
+bot_token = YOUR_TELEGRAM_BOT_TOKEN
+chat_id = YOUR_TELEGRAM_CHAT_ID
+allowed_user_id = YOUR_TELEGRAM_USER_ID
+; Optional. Use this if api.telegram.org is unavailable directly.
+; Examples:
+; proxy = http://127.0.0.1:8080
+; proxy = socks5://127.0.0.1:1080
+
+[steam]
+api_key = YOUR_STEAM_WEB_API_KEY
+poll_interval_seconds = 60
+status_reminder_interval_seconds = 3600
+notify_on_start = true
+monitor_comments = true
+monitor_friends = true
+monitor_badges = true
+monitor_rich_presence = true
+
+[accounts]
+71321111000000002 = Main
+72321111000000002 = Twink
+ 
+; Можно также задавать аккаунты отдельными секциями:
+; [account:my_second_format]
+; steam_id = 74321111000000002
+; label = Another account
