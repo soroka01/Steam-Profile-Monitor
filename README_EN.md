@@ -150,7 +150,7 @@ Fill the `[steam]` section in `config.ini`:
 ```ini
 [steam]
 api_key = YOUR_STEAM_WEB_API_KEY
-poll_interval_seconds = 60
+poll_interval_seconds = 10
 status_reminder_interval_seconds = 3600
 notify_on_start = true
 monitor_comments = true
@@ -164,7 +164,7 @@ Fields:
 | Field | Description |
 | --- | --- |
 | `api_key` | Steam Web API key. |
-| `poll_interval_seconds` | Steam polling interval. The code enforces a minimum of 15 seconds. |
+| `poll_interval_seconds` | Steam polling interval. The code enforces a minimum of 10 seconds. |
 | `status_reminder_interval_seconds` | Interval for intermediate reminders for active online/game states. `0` disables reminders. Offline reminders are not sent. |
 | `notify_on_start` | Whether to send baseline status messages on startup. |
 | `monitor_comments` | Track profile comments. |

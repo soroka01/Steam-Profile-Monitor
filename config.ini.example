@@ -9,7 +9,7 @@ allowed_user_id = YOUR_TELEGRAM_USER_ID
 
 [steam]
 api_key = YOUR_STEAM_WEB_API_KEY
-poll_interval_seconds = 60
+poll_interval_seconds = 10
 status_reminder_interval_seconds = 3600
 notify_on_start = true
 monitor_comments = true

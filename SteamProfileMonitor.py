@@ -31,6 +31,8 @@ STEAMID64_ACCOUNT_ID_BASE = 76561197960265728
 CS2_APP_ID = "730"
 STEAM_RETRY_DELAYS = (2, 5, 10)
 TELEGRAM_SEND_RETRY_DELAYS = (2, 5, 10)
+MIN_POLL_INTERVAL_SECONDS = 10
+COMMENT_EMPTY_CONFIRMATIONS_REQUIRED = 2
 
 
 def local_timezone() -> timezone:
@@ -379,7 +381,7 @@ def load_config(path: Path = CONFIG_PATH) -> MonitorConfig:
         allowed_user_id=allowed_user_id,
         telegram_proxy=telegram_proxy,
         steam_api_key=config.get("steam", "api_key").strip(),
-        poll_interval_seconds=max(15, config.getint("steam", "poll_interval_seconds", fallback=60)),
+        poll_interval_seconds=max(MIN_POLL_INTERVAL_SECONDS, config.getint("steam", "poll_interval_seconds", fallback=60)),
         status_reminder_interval_seconds=max(0, config.getint("steam", "status_reminder_interval_seconds", fallback=3600)),
         notify_on_start=_get_bool(config, "steam", "notify_on_start", False),
         monitor_comments=_get_bool(config, "steam", "monitor_comments", True),
@@ -820,6 +822,7 @@ class SteamProfileMonitor:
         self.account_loggers: Dict[str, logging.Logger] = {}
         self.account_by_id = {account.steam_id: account for account in config.accounts}
         self.visibility_warnings: Set[str] = set()
+        self.comment_empty_observations: Dict[str, int] = {}
         self.load_state()
 
     async def send(self, text: str) -> None:
@@ -900,6 +903,8 @@ class SteamProfileMonitor:
 
             player = summaries.get(account.steam_id, {})
             new_snapshot = await self.build_snapshot(account, player)
+            if old_snapshot is not None:
+                self.suppress_transient_empty_comments(account, old_snapshot, new_snapshot, checked_at)
             self.log_snapshot(account, new_snapshot, checked_at)
 
             if old_snapshot is None:
@@ -1140,6 +1145,50 @@ class SteamProfileMonitor:
         change_logger.info(line)
         self.log_account(account, logging.INFO, "CHANGE %s", line)
 
+    def suppress_transient_empty_comments(
+        self,
+        account: MonitoredAccount,
+        old: AccountSnapshot,
+        new: AccountSnapshot,
+        checked_at: datetime,
+    ) -> None:
+        if new.comments is None:
+            self.comment_empty_observations.pop(account.steam_id, None)
+            return
+
+        if not old.comments:
+            if new.comments:
+                self.comment_empty_observations.pop(account.steam_id, None)
+            return
+
+        if new.comments:
+            self.comment_empty_observations.pop(account.steam_id, None)
+            return
+
+        observations = self.comment_empty_observations.get(account.steam_id, 0) + 1
+        self.comment_empty_observations[account.steam_id] = observations
+        if observations >= COMMENT_EMPTY_CONFIRMATIONS_REQUIRED:
+            self.comment_empty_observations.pop(account.steam_id, None)
+            self.log_account(
+                account,
+                logging.WARNING,
+                "%s | comments_empty_confirmed | Steam вернул пустой список комментариев %s раза подряд, принимаю удаление. Было=%s",
+                format_dt(checked_at),
+                observations,
+                len(old.comments),
+            )
+            return
+
+        new.comments = set(old.comments)
+        new.known_comments = dict(old.known_comments)
+        self.log_account(
+            account,
+            logging.WARNING,
+            "%s | comments_empty_ignored | Steam вернул пустой список комментариев после %s; жду подтверждения перед удалением.",
+            format_dt(checked_at),
+            len(old.comments),
+        )
+
     def record_cs2_match(
         self,
         account: MonitoredAccount,
@@ -1339,6 +1388,21 @@ class SteamProfileMonitor:
         if badge.app_id is not None:
             parts.append(f'<a href="https://store.steampowered.com/app/{badge.app_id}/">app {badge.app_id}</a>')
         parts.append(f"key <code>{html_text(badge.badge_key)}</code>")
+        return " · ".join(parts)
+
+    def badge_level_detail_html(self, badge_key: str, old_badge: BadgeInfo, new_badge: BadgeInfo) -> str:
+        name = new_badge.name or old_badge.name or badge_key
+        old_level = "нет" if old_badge.level is None else str(old_badge.level)
+        new_level = "нет" if new_badge.level is None else str(new_badge.level)
+        level_label = "игр приобретено" if badge_key.startswith("13:") else "уровень"
+        parts = [
+            f"🏅 <b>{html_text(name)}</b>",
+            f"{html_text(level_label)} <b>{html_text(old_level)}</b> → <b>{html_text(new_level)}</b>",
+        ]
+        app_id = new_badge.app_id if new_badge.app_id is not None else old_badge.app_id
+        if app_id is not None:
+            parts.append(f'<a href="https://store.steampowered.com/app/{app_id}/">app {app_id}</a>')
+        parts.append(f"key <code>{html_text(badge_key)}</code>")
         return " · ".join(parts)
 
     def friend_detail_html(self, friend: FriendInfo) -> str:
@@ -1646,6 +1710,32 @@ class SteamProfileMonitor:
                         checked_at,
                         "бейдж пропал из API",
                         html_details=[self.badge_detail_html(badge_key, old.known_badges)],
+                    )
+                )
+
+            unchanged_badges = sorted(old.badges & new.badges)
+            for badge_key in unchanged_badges:
+                old_badge = old.known_badges.get(badge_key)
+                new_badge = new.known_badges.get(badge_key)
+                if not old_badge or not new_badge or old_badge.level == new_badge.level:
+                    continue
+
+                badge_name = new_badge.name or old_badge.name or badge_key
+                level_label = "игр приобретено" if badge_key.startswith("13:") else "уровень"
+                self.log_change(
+                    checked_at,
+                    account,
+                    "badge_level_changed",
+                    f"{badge_name}; {level_label}: {old_badge.level} -> {new_badge.level}",
+                )
+                events.append(
+                    self.format_event_message(
+                        account,
+                        new,
+                        display_timeline,
+                        checked_at,
+                        "обновился бейдж",
+                        html_details=[self.badge_level_detail_html(badge_key, old_badge, new_badge)],
                     )
                 )
 

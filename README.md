@@ -150,7 +150,7 @@ proxy = socks5://127.0.0.1:1080
 ```ini
 [steam]
 api_key = YOUR_STEAM_WEB_API_KEY
-poll_interval_seconds = 60
+poll_interval_seconds = 10
 status_reminder_interval_seconds = 3600
 notify_on_start = true
 monitor_comments = true
@@ -164,7 +164,7 @@ monitor_rich_presence = true
 | Поле | Описание |
 | --- | --- |
 | `api_key` | Steam Web API key. |
-| `poll_interval_seconds` | Интервал проверки Steam. Минимум в коде ограничен 15 секундами. |
+| `poll_interval_seconds` | Интервал проверки Steam. Минимум в коде ограничен 10 секундами. |
 | `status_reminder_interval_seconds` | Интервал промежуточных напоминаний по активным online/game состояниям. `0` отключает напоминания. Для статуса `не в сети` напоминания не отправляются. |
 | `notify_on_start` | Отправлять ли базовый статус при запуске. |
 | `monitor_comments` | Отслеживать комментарии профиля. |
