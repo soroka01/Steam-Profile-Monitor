@@ -159,6 +159,7 @@ class AccountSnapshot:
 class AccountTimeline:
     observed_since: datetime
     online_started_at: Optional[datetime] = None
+    persona_started_at: Optional[datetime] = None
     game_started_at: Optional[datetime] = None
     idle_started_at: Optional[datetime] = None
     offline_started_at: Optional[datetime] = None
@@ -293,6 +294,7 @@ def timeline_to_json(timeline: AccountTimeline) -> Dict[str, Any]:
     return {
         "observed_since": dt_to_json(timeline.observed_since),
         "online_started_at": dt_to_json(timeline.online_started_at),
+        "persona_started_at": dt_to_json(timeline.persona_started_at),
         "game_started_at": dt_to_json(timeline.game_started_at),
         "idle_started_at": dt_to_json(timeline.idle_started_at),
         "offline_started_at": dt_to_json(timeline.offline_started_at),
@@ -308,6 +310,7 @@ def timeline_from_json(data: Dict[str, Any], fallback: datetime) -> AccountTimel
     return AccountTimeline(
         observed_since=parse_dt(data.get("observed_since")) or fallback,
         online_started_at=parse_dt(data.get("online_started_at")),
+        persona_started_at=parse_dt(data.get("persona_started_at")) or parse_dt(data.get("online_started_at")),
         game_started_at=parse_dt(data.get("game_started_at")),
         idle_started_at=parse_dt(data.get("idle_started_at")),
         offline_started_at=parse_dt(data.get("offline_started_at")),
@@ -1023,6 +1026,7 @@ class SteamProfileMonitor:
         return AccountTimeline(
             observed_since=checked_at,
             online_started_at=checked_at if snapshot.online else None,
+            persona_started_at=checked_at if snapshot.online else None,
             game_started_at=checked_at if snapshot.game_id else None,
             idle_started_at=checked_at if snapshot.online and not snapshot.game_id else None,
             offline_started_at=checked_at if not snapshot.online else None,
@@ -1040,6 +1044,7 @@ class SteamProfileMonitor:
         checked_at: datetime,
     ) -> AccountTimeline:
         online_started_at = timeline.online_started_at if old.online and new.online else checked_at if new.online else None
+        persona_started_at = timeline.persona_started_at if old.online and new.online and old.persona_state == new.persona_state else checked_at if new.online else None
         game_started_at = timeline.game_started_at if old.game_id and old.game_id == new.game_id else checked_at if new.game_id else None
         idle_started_at = timeline.idle_started_at if old.online and not old.game_id and new.online and not new.game_id else checked_at if new.online and not new.game_id else None
         offline_started_at = timeline.offline_started_at if not old.online and not new.online else checked_at if not new.online else None
@@ -1061,6 +1066,7 @@ class SteamProfileMonitor:
         return AccountTimeline(
             observed_since=timeline.observed_since,
             online_started_at=online_started_at,
+            persona_started_at=persona_started_at,
             game_started_at=game_started_at,
             idle_started_at=idle_started_at,
             offline_started_at=offline_started_at,
@@ -1081,8 +1087,8 @@ class SteamProfileMonitor:
     def state_started_at(self, snapshot: AccountSnapshot, timeline: AccountTimeline) -> datetime:
         if snapshot.game_id and timeline.game_started_at:
             return timeline.game_started_at
-        if snapshot.online and timeline.idle_started_at:
-            return timeline.idle_started_at
+        if snapshot.online and timeline.persona_started_at:
+            return timeline.persona_started_at
         if snapshot.online and timeline.online_started_at:
             return timeline.online_started_at
         return timeline.offline_started_at or timeline.observed_since
