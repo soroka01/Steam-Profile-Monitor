@@ -3,6 +3,7 @@ import configparser
 import html
 import json
 import logging
+import os
 import re
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -27,6 +28,7 @@ STATE_PATH = BASE_DIR / "steam_monitor_state.json"
 
 STEAM_API_BASE = "https://api.steampowered.com"
 STEAM_COMMUNITY_BASE = "https://steamcommunity.com"
+STEAMID_UK_API_BASE = "https://steamidapi.uk/v2"
 STEAMID64_ACCOUNT_ID_BASE = 76561197960265728
 CS2_APP_ID = "730"
 STEAM_RETRY_DELAYS = (2, 5, 10)
@@ -95,6 +97,12 @@ class MonitorConfig:
     allowed_user_id: Optional[int]
     telegram_proxy: Optional[str]
     steam_api_key: str
+    steamid_uk_enabled: bool
+    steamid_uk_api_key: str
+    steamid_uk_myid: str
+    steamid_uk_refresh_interval_seconds: int
+    steamid_uk_sync_watchlist: bool
+    steamid_uk_watchlist_id: str
     poll_interval_seconds: int
     status_reminder_interval_seconds: int
     notify_on_start: bool
@@ -178,6 +186,17 @@ class CS2MatchRecord:
     score: str
     result: str
     rich_presence: str = ""
+
+
+@dataclass
+class SteamIdUkProfile:
+    fetched_at: datetime
+    profile: Dict[str, Any] = field(default_factory=dict)
+    profile_bans: Dict[str, Any] = field(default_factory=dict)
+    private_notes: Dict[str, Any] = field(default_factory=dict)
+    steamid_data: Dict[str, Any] = field(default_factory=dict)
+    custom_watch_list: Dict[str, Any] = field(default_factory=dict)
+    auth: Dict[str, Any] = field(default_factory=dict)
 
 
 def parse_dt(value: Any) -> Optional[datetime]:
@@ -347,10 +366,66 @@ def match_from_json(data: Dict[str, Any]) -> Optional[CS2MatchRecord]:
     )
 
 
+def steamid_uk_profile_to_json(profile: SteamIdUkProfile) -> Dict[str, Any]:
+    return {
+        "fetched_at": dt_to_json(profile.fetched_at),
+        "profile": profile.profile,
+        "profile_bans": profile.profile_bans,
+        "private_notes": profile.private_notes,
+        "steamid_data": profile.steamid_data,
+        "custom_watch_list": profile.custom_watch_list,
+        "auth": profile.auth,
+    }
+
+
+def steamid_uk_profile_from_json(data: Dict[str, Any], fallback: datetime) -> SteamIdUkProfile:
+    return SteamIdUkProfile(
+        fetched_at=parse_dt(data.get("fetched_at")) or fallback,
+        profile=data.get("profile", {}) if isinstance(data.get("profile"), dict) else {},
+        profile_bans=data.get("profile_bans", {}) if isinstance(data.get("profile_bans"), dict) else {},
+        private_notes=data.get("private_notes", {}) if isinstance(data.get("private_notes"), dict) else {},
+        steamid_data=data.get("steamid_data", {}) if isinstance(data.get("steamid_data"), dict) else {},
+        custom_watch_list=data.get("custom_watch_list", {}) if isinstance(data.get("custom_watch_list"), dict) else {},
+        auth=data.get("auth", {}) if isinstance(data.get("auth"), dict) else {},
+    )
+
+
+def steamid_uk_profile_from_api(data: Dict[str, Any], fetched_at: datetime) -> SteamIdUkProfile:
+    return SteamIdUkProfile(
+        fetched_at=fetched_at,
+        profile=data.get("profile", {}) if isinstance(data.get("profile"), dict) else {},
+        profile_bans=data.get("profile_bans", {}) if isinstance(data.get("profile_bans"), dict) else {},
+        private_notes=data.get("private_notes", {}) if isinstance(data.get("private_notes"), dict) else {},
+        steamid_data=data.get("steamid_data", {}) if isinstance(data.get("steamid_data"), dict) else {},
+        custom_watch_list=data.get("custom_watch_list", {}) if isinstance(data.get("custom_watch_list"), dict) else {},
+        auth=data.get("auth", {}) if isinstance(data.get("auth"), dict) else {},
+    )
+
+
 def _get_bool(config: configparser.ConfigParser, section: str, option: str, fallback: bool) -> bool:
     if not config.has_option(section, option):
         return fallback
     return config.getboolean(section, option)
+
+
+def _get_int(config: configparser.ConfigParser, section: str, option: str, fallback: int) -> int:
+    if not config.has_option(section, option):
+        return fallback
+    return config.getint(section, option)
+
+
+def _get_optional_config_value(
+    config: configparser.ConfigParser,
+    section: str,
+    option: str,
+    fallback: str = "",
+) -> str:
+    if not config.has_option(section, option):
+        return fallback
+    value = config.get(section, option).strip()
+    if not value or value.startswith("YOUR_"):
+        return fallback
+    return value
 
 
 def load_config(path: Path = CONFIG_PATH) -> MonitorConfig:
@@ -378,12 +453,38 @@ def load_config(path: Path = CONFIG_PATH) -> MonitorConfig:
         if raw_proxy and not raw_proxy.startswith("YOUR_"):
             telegram_proxy = raw_proxy
 
+    steamid_uk_api_key = _get_optional_config_value(
+        config,
+        "steamid_uk",
+        "api_key",
+        os.environ.get("STEAMID_UK_API_KEY", ""),
+    )
+    steamid_uk_myid = _get_optional_config_value(
+        config,
+        "steamid_uk",
+        "myid",
+        os.environ.get("STEAMID_UK_MYID", ""),
+    )
+    steamid_uk_enabled = (
+        _get_bool(config, "steamid_uk", "enabled", bool(steamid_uk_api_key and steamid_uk_myid))
+        and bool(steamid_uk_api_key and steamid_uk_myid)
+    )
+
     return MonitorConfig(
         bot_token=config.get("telegram", "bot_token").strip(),
         chat_id=int(config.get("telegram", "chat_id").strip()),
         allowed_user_id=allowed_user_id,
         telegram_proxy=telegram_proxy,
         steam_api_key=config.get("steam", "api_key").strip(),
+        steamid_uk_enabled=steamid_uk_enabled,
+        steamid_uk_api_key=steamid_uk_api_key,
+        steamid_uk_myid=steamid_uk_myid,
+        steamid_uk_refresh_interval_seconds=max(
+            300,
+            _get_int(config, "steamid_uk", "refresh_interval_seconds", 21600),
+        ),
+        steamid_uk_sync_watchlist=_get_bool(config, "steamid_uk", "sync_watchlist", False),
+        steamid_uk_watchlist_id=_get_optional_config_value(config, "steamid_uk", "watchlist_id", "1"),
         poll_interval_seconds=max(MIN_POLL_INTERVAL_SECONDS, config.getint("steam", "poll_interval_seconds", fallback=60)),
         status_reminder_interval_seconds=max(0, config.getint("steam", "status_reminder_interval_seconds", fallback=3600)),
         notify_on_start=_get_bool(config, "steam", "notify_on_start", False),
@@ -814,14 +915,90 @@ class SteamApiClient:
         return comment_ids, comments
 
 
+class SteamIdUkClient:
+    def __init__(self, api_key: str, myid: str, session: aiohttp.ClientSession):
+        self.api_key = api_key
+        self.myid = myid
+        self.session = session
+        self.access_warnings: Set[Tuple[Any, ...]] = set()
+
+    def warn_access_once(self, key: Tuple[Any, ...], message: str, *args: Any) -> None:
+        if key in self.access_warnings:
+            return
+        self.access_warnings.add(key)
+        logger.warning(message, *args)
+
+    async def _get_json(self, endpoint: str, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        url = f"{STEAMID_UK_API_BASE}/{endpoint}.php"
+        request_params = {
+            "myid": self.myid,
+            "apikey": self.api_key,
+            **params,
+        }
+        for attempt in range(1, len(STEAM_RETRY_DELAYS) + 2):
+            try:
+                async with self.session.get(url, params=request_params, timeout=20) as response:
+                    if response.status == 200:
+                        data = await response.json(content_type=None)
+                        auth = data.get("auth", {}) if isinstance(data, dict) else {}
+                        if auth.get("auth") == "ok":
+                            return data
+                        error_id = str(auth.get("error") or auth.get("error_id") or "")
+                        self.warn_access_once(
+                            ("steamid-uk-auth", endpoint, error_id),
+                            "SteamID.uk вернул ошибку авторизации/API для %s: %s",
+                            endpoint,
+                            auth or data,
+                        )
+                        return None
+                    if response.status not in {429, 500, 502, 503, 504}:
+                        logger.warning("SteamID.uk вернул HTTP %s для %s", response.status, endpoint)
+                        return None
+                    logger.warning("SteamID.uk вернул HTTP %s для %s, попытка %s", response.status, endpoint, attempt)
+            except asyncio.TimeoutError:
+                logger.warning("Таймаут запроса к SteamID.uk %s, попытка %s", endpoint, attempt)
+            except (aiohttp.ClientError, OSError) as exc:
+                logger.warning("Ошибка запроса к SteamID.uk %s: %s, попытка %s", endpoint, exc, attempt)
+            except (json.JSONDecodeError, ValueError) as exc:
+                logger.warning("SteamID.uk вернул не JSON для %s: %s", endpoint, exc)
+                return None
+
+            if attempt <= len(STEAM_RETRY_DELAYS):
+                await asyncio.sleep(STEAM_RETRY_DELAYS[attempt - 1])
+        return None
+
+    async def get_profile(self, steam_id: str) -> Optional[Dict[str, Any]]:
+        return await self._get_json("steamid", {"input": steam_id})
+
+    async def add_to_watchlist(self, steam_id: str, watchlist_id: str) -> bool:
+        data = await self._get_json(
+            "watch",
+            {
+                "input": steam_id,
+                "watchlist": watchlist_id,
+                "action": "add",
+            },
+        )
+        return bool(data and str(data.get("added", "")) == steam_id)
+
+
 class SteamProfileMonitor:
-    def __init__(self, config: MonitorConfig, bot: Bot, steam: SteamApiClient):
+    def __init__(
+        self,
+        config: MonitorConfig,
+        bot: Bot,
+        steam: SteamApiClient,
+        steamid_uk: Optional[SteamIdUkClient] = None,
+    ):
         self.config = config
         self.bot = bot
         self.steam = steam
+        self.steamid_uk = steamid_uk
         self.snapshots: Dict[str, AccountSnapshot] = {}
         self.timelines: Dict[str, AccountTimeline] = {}
         self.cs2_daily_matches: Dict[str, Dict[str, List[CS2MatchRecord]]] = {}
+        self.steamid_uk_profiles: Dict[str, SteamIdUkProfile] = {}
+        self.steamid_uk_watchlist_synced: Set[str] = set()
         self.account_loggers: Dict[str, logging.Logger] = {}
         self.account_by_id = {account.steam_id: account for account in config.accounts}
         self.visibility_warnings: Set[str] = set()
@@ -863,6 +1040,8 @@ class SteamProfileMonitor:
                 format_dt(started_at),
                 self.config.poll_interval_seconds,
             )
+        if self.steamid_uk and self.config.steamid_uk_sync_watchlist:
+            await self.sync_steamid_uk_watchlist()
         await self.send(
             "🟢 <b>Steam Profile Monitor запущен</b>\n"
             f"🕒 <code>{html_text(format_dt(started_at))}</code>\n\n"
@@ -870,7 +1049,8 @@ class SteamProfileMonitor:
             f"🔁 Проверка: <b>{self.config.poll_interval_seconds} сек.</b>\n"
             f"⏰ Напоминания: <b>{html_text(format_interval(self.config.status_reminder_interval_seconds))}</b>"
             f"{' (кроме статуса «не в сети»)' if self.config.status_reminder_interval_seconds > 0 else ''}\n\n"
-            "Команды: /status, /accounts, /cs2today"
+            f"🧩 SteamID.uk: <b>{'включен' if self.steamid_uk else 'выключен'}</b>\n\n"
+            "Команды: /status, /accounts, /cs2today, /steamiduk"
         )
 
         first_run = True
@@ -905,6 +1085,7 @@ class SteamProfileMonitor:
                 continue
 
             player = summaries.get(account.steam_id, {})
+            await self.refresh_steamid_uk_profile_if_due(account, checked_at)
             new_snapshot = await self.build_snapshot(account, player)
             if old_snapshot is not None:
                 self.suppress_transient_empty_comments(account, old_snapshot, new_snapshot, checked_at)
@@ -939,6 +1120,61 @@ class SteamProfileMonitor:
                 await self.send(reminder)
 
             self.save_state()
+
+    async def sync_steamid_uk_watchlist(self) -> None:
+        if not self.steamid_uk:
+            return
+        watchlist_id = self.config.steamid_uk_watchlist_id
+        for account in self.config.accounts:
+            if account.steam_id in self.steamid_uk_watchlist_synced:
+                continue
+            added = await self.steamid_uk.add_to_watchlist(account.steam_id, watchlist_id)
+            if added:
+                self.steamid_uk_watchlist_synced.add(account.steam_id)
+                self.log_account(
+                    account,
+                    logging.INFO,
+                    "%s | steamid_uk_watchlist_synced | watchlist_id=%s",
+                    format_dt(now_local()),
+                    watchlist_id,
+                )
+
+    async def refresh_all_steamid_uk_profiles(self, force: bool = False) -> None:
+        checked_at = now_local()
+        for account in self.config.accounts:
+            await self.refresh_steamid_uk_profile_if_due(account, checked_at, force=force)
+        self.save_state()
+
+    async def refresh_steamid_uk_profile_if_due(
+        self,
+        account: MonitoredAccount,
+        checked_at: datetime,
+        force: bool = False,
+    ) -> None:
+        if not self.steamid_uk:
+            return
+        cached = self.steamid_uk_profiles.get(account.steam_id)
+        if cached and not force:
+            age = (checked_at - cached.fetched_at).total_seconds()
+            if age < self.config.steamid_uk_refresh_interval_seconds:
+                return
+
+        data = await self.steamid_uk.get_profile(account.steam_id)
+        if not data:
+            return
+
+        profile = steamid_uk_profile_from_api(data, checked_at)
+        self.steamid_uk_profiles[account.steam_id] = profile
+        daily_count = profile.auth.get("daily_count", "?")
+        daily_limit = profile.auth.get("daily_limit", "?")
+        self.log_account(
+            account,
+            logging.INFO,
+            "%s | steamid_uk_refreshed | daily=%s/%s",
+            format_dt(checked_at),
+            daily_count,
+            daily_limit,
+        )
 
     def account_logger(self, account: MonitoredAccount) -> logging.Logger:
         existing = self.account_loggers.get(account.steam_id)
@@ -978,6 +1214,8 @@ class SteamProfileMonitor:
         snapshots = data.get("snapshots", {})
         timelines = data.get("timelines", {})
         cs2_daily_matches = data.get("cs2_daily_matches", {})
+        steamid_uk_profiles = data.get("steamid_uk_profiles", {})
+        steamid_uk_watchlist_synced = data.get("steamid_uk_watchlist_synced", [])
 
         for steam_id, snapshot_data in snapshots.items():
             if steam_id not in account_ids or not isinstance(snapshot_data, dict):
@@ -999,11 +1237,23 @@ class SteamProfileMonitor:
                 matches = [match_from_json(item) for item in matches_data if isinstance(item, dict)]
                 self.cs2_daily_matches[steam_id][day] = [match for match in matches if match is not None]
 
+        for steam_id, profile_data in steamid_uk_profiles.items():
+            if steam_id not in account_ids or not isinstance(profile_data, dict):
+                continue
+            self.steamid_uk_profiles[steam_id] = steamid_uk_profile_from_json(profile_data, loaded_at)
+
+        if isinstance(steamid_uk_watchlist_synced, list):
+            self.steamid_uk_watchlist_synced = {
+                str(steam_id)
+                for steam_id in steamid_uk_watchlist_synced
+                if str(steam_id) in account_ids
+            }
+
         logger.info("Загружено сохраненное состояние: снимков=%s, файл=%s", len(self.snapshots), STATE_PATH)
 
     def save_state(self) -> None:
         data = {
-            "version": 1,
+            "version": 2,
             "saved_at": dt_to_json(now_local()),
             "snapshots": {steam_id: snapshot_to_json(snapshot) for steam_id, snapshot in self.snapshots.items()},
             "timelines": {steam_id: timeline_to_json(timeline) for steam_id, timeline in self.timelines.items()},
@@ -1014,6 +1264,11 @@ class SteamProfileMonitor:
                 }
                 for steam_id, by_day in self.cs2_daily_matches.items()
             },
+            "steamid_uk_profiles": {
+                steam_id: steamid_uk_profile_to_json(profile)
+                for steam_id, profile in self.steamid_uk_profiles.items()
+            },
+            "steamid_uk_watchlist_synced": sorted(self.steamid_uk_watchlist_synced),
         }
         tmp_path = STATE_PATH.with_suffix(".tmp")
         try:
@@ -1435,11 +1690,98 @@ class SteamProfileMonitor:
         lines.append(f"Комментарий ID: <code>{html_text(comment_id)}</code>")
         return lines
 
-    async def baseline_detail_html(self, snapshot: AccountSnapshot) -> List[str]:
+    def steamid_uk_flag(self, value: Any) -> bool:
+        return str(value).strip().lower() in {"1", "true", "yes", "y"}
+
+    def steamid_uk_value(self, value: Any, fallback: str = "0") -> str:
+        value = str(value).strip() if value is not None else ""
+        return value if value else fallback
+
+    def steamid_uk_summary_html(self, account: MonitoredAccount, compact: bool = False) -> List[str]:
+        if not self.steamid_uk:
+            return []
+
+        profile = self.steamid_uk_profiles.get(account.steam_id)
+        if not profile:
+            return ["🧩 SteamID.uk: <b>нет данных в кэше</b>"]
+
+        bans = profile.profile_bans
+        data = profile.steamid_data
+        watch = profile.custom_watch_list
+        notes = profile.private_notes
+        fetched_age = format_duration(profile.fetched_at, now_local())
+
+        lines = [
+            f"🧩 SteamID.uk: <b>обновлено {html_text(fetched_age)} назад</b>",
+            "🚫 Баны: "
+            f"VAC <b>{html_text(self.steamid_uk_value(bans.get('vac')))}</b> · "
+            f"Game <b>{html_text(self.steamid_uk_value(bans.get('amount_game_bans')))}</b> · "
+            f"Trade <b>{html_text(self.steamid_uk_value(bans.get('tradeban')))}</b> · "
+            f"Community <b>{html_text(self.steamid_uk_value(bans.get('communityban')))}</b>",
+            "⚠️ Друзья с банами: "
+            f"VAC <b>{html_text(self.steamid_uk_value(data.get('vac_banned_friends')))}</b> · "
+            f"Game <b>{html_text(self.steamid_uk_value(data.get('game_banned_friends')))}</b> · "
+            f"Trade <b>{html_text(self.steamid_uk_value(data.get('trade_banned_friends')))}</b> · "
+            f"Community <b>{html_text(self.steamid_uk_value(data.get('community_banned_friends')))}</b>",
+        ]
+
+        if compact:
+            return lines
+
+        lines.append(
+            "📚 История: "
+            f"друзей <b>{html_text(self.steamid_uk_value(data.get('friend_history_count')))}</b> · "
+            f"имён <b>{html_text(self.steamid_uk_value(data.get('name_history_count')))}</b> · "
+            f"URL <b>{html_text(self.steamid_uk_value(data.get('url_changes')))}</b>"
+        )
+        friend_count = self.steamid_uk_value(data.get("friend_count"), "")
+        if friend_count:
+            lines.append(f"👥 Друзей по базе SteamID.uk: <b>{html_text(friend_count)}</b>")
+        if self.steamid_uk_flag(data.get("steamid_optout")):
+            lines.append("🔒 SteamID.uk opt-out: <b>да</b>")
+        if self.steamid_uk_flag(bans.get("rusthackreport")):
+            days = self.steamid_uk_value(bans.get("rusthackreport_days_old"), "?")
+            url = bans.get("rusthackreport_url")
+            if url:
+                lines.append(f'⚠️ RustHackReport: <a href="{html_attr(url)}">есть запись</a>, {html_text(days)} дн. назад')
+            else:
+                lines.append(f"⚠️ RustHackReport: <b>есть запись</b>, {html_text(days)} дн. назад")
+        if self.steamid_uk_flag(watch.get("watch_result")):
+            category = watch.get("category") or watch.get("id") or "watch list"
+            lines.append(f"👁 Watch list: <b>{html_text(category)}</b>")
+        note_count = self.steamid_uk_value(notes.get("private_note_count"), "")
+        if note_count:
+            lines.append(f"📝 Private notes: <b>{html_text(note_count)}</b>")
+        return lines
+
+    def format_steamid_uk_report(self) -> str:
+        if not self.steamid_uk:
+            return "🧩 <b>SteamID.uk выключен.</b>\nДобавьте секцию <code>[steamid_uk]</code> в config.ini."
+
+        lines = [
+            "🧩 <b>SteamID.uk</b>",
+            f"🔁 Автообновление: <b>{html_text(format_interval(self.config.steamid_uk_refresh_interval_seconds))}</b>",
+        ]
+        for account in self.config.accounts:
+            snapshot = self.snapshots.get(account.steam_id)
+            display_name = snapshot.display_name if snapshot else account.label
+            profile_url = snapshot.profile_url if snapshot else f"{STEAM_COMMUNITY_BASE}/profiles/{account.steam_id}"
+            lines.extend(
+                [
+                    "",
+                    f'👤 <a href="{html_attr(profile_url)}">{html_text(account.label)}</a> / {html_text(display_name)}',
+                    f"🆔 <code>{html_text(account.steam_id)}</code>",
+                    *self.steamid_uk_summary_html(account, compact=False),
+                ]
+            )
+        return "\n".join(lines)
+
+    async def baseline_detail_html(self, account: MonitoredAccount, snapshot: AccountSnapshot) -> List[str]:
         details = [
             f"👥 Друзья: <b>{html_text(format_optional_count(snapshot.friends))}</b>",
             f"🏅 Бейджи: <b>{html_text(format_optional_count(snapshot.badges))}</b>",
             f"💬 Комментарии из ответа Steam: <b>{html_text(format_optional_count(snapshot.comments))}</b>",
+            *self.steamid_uk_summary_html(account, compact=False),
         ]
 
         if snapshot.friends:
@@ -1824,7 +2166,7 @@ class SteamProfileMonitor:
         checked_at: datetime,
         is_new_account: bool = False,
     ) -> str:
-        html_details = await self.baseline_detail_html(snapshot)
+        html_details = await self.baseline_detail_html(account, snapshot)
         title = "Новый аккаунт добавлен в мониторинг" if is_new_account else "Первый снимок после запуска"
         lines = [
             f"📌 <b>{html_text(title)}</b>",
@@ -1857,6 +2199,7 @@ class SteamProfileMonitor:
                 self.account_title(account, snapshot),
                 f"{self.state_emoji(snapshot)} Сейчас: <b>{html_text(self.current_state_text(snapshot))}</b>",
                 *self.duration_lines(snapshot, timeline, checked_at),
+                *self.steamid_uk_summary_html(account, compact=True),
             ]
             lines.extend(block)
         return "\n".join(lines)
@@ -1870,7 +2213,12 @@ async def main() -> None:
         telegram_session = AiohttpSession(proxy=config.telegram_proxy, timeout=30)
         bot = Bot(token=config.bot_token, session=telegram_session)
         steam = SteamApiClient(config.steam_api_key, session)
-        monitor = SteamProfileMonitor(config, bot, steam)
+        steamid_uk = (
+            SteamIdUkClient(config.steamid_uk_api_key, config.steamid_uk_myid, session)
+            if config.steamid_uk_enabled
+            else None
+        )
+        monitor = SteamProfileMonitor(config, bot, steam, steamid_uk)
         dispatcher = Dispatcher()
 
         @dispatcher.message(Command("start"))
@@ -1880,7 +2228,8 @@ async def main() -> None:
                 "🟢 <b>Steam Profile Monitor работает</b>\n\n"
                 "📊 /status — подробный статус и длительности\n"
                 "👥 /accounts — отслеживаемые SteamID\n"
-                "🎯 /cs2today — матчи CS2 за сегодня",
+                "🎯 /cs2today — матчи CS2 за сегодня\n"
+                "🧩 /steamiduk — данные SteamID.uk",
             )
 
         @dispatcher.message(Command("status"))
@@ -1902,6 +2251,11 @@ async def main() -> None:
         @dispatcher.message(Command("cs2today"))
         async def cs2today_command(message: Message) -> None:
             await monitor.send_private(message, monitor.format_cs2_daily_report())
+
+        @dispatcher.message(Command("steamiduk"))
+        async def steamiduk_command(message: Message) -> None:
+            await monitor.refresh_all_steamid_uk_profiles(force=True)
+            await monitor.send_private(message, monitor.format_steamid_uk_report())
 
         monitor_task = asyncio.create_task(monitor.run_forever())
         try:

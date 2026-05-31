@@ -17,6 +17,15 @@ monitor_friends = true
 monitor_badges = true
 monitor_rich_presence = true
 
+[steamid_uk]
+enabled = false
+api_key = YOUR_STEAMID_UK_API_KEY
+myid = YOUR_STEAMID64
+; SteamID.uk steamid.php limit is lower than the converter limit, so keep this slow.
+refresh_interval_seconds = 21600
+sync_watchlist = false
+watchlist_id = 1
+
 [accounts]
 71321111000000002 = Main
 72321111000000002 = Twink
