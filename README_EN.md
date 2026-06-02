@@ -152,11 +152,13 @@ Fill the `[steam]` section in `config.ini`:
 api_key = YOUR_STEAM_WEB_API_KEY
 poll_interval_seconds = 10
 status_reminder_interval_seconds = 3600
+persona_state_debounce_seconds = 120
 notify_on_start = true
 monitor_comments = true
 monitor_friends = true
 monitor_badges = true
 monitor_rich_presence = true
+monitor_cs2 = true
 ```
 
 Fields:
@@ -166,11 +168,13 @@ Fields:
 | `api_key` | Steam Web API key. |
 | `poll_interval_seconds` | Steam polling interval. The code enforces a minimum of 10 seconds. |
 | `status_reminder_interval_seconds` | Interval for intermediate reminders for active online/game states. `0` disables reminders. Offline reminders are not sent. |
+| `persona_state_debounce_seconds` | How many seconds a new Steam persona state such as `online`, `away`, or `snooze` must stay visible before a notification is sent. `0` disables the filter. |
 | `notify_on_start` | Whether to send baseline status messages on startup. |
 | `monitor_comments` | Track profile comments. |
 | `monitor_friends` | Track the friends list. |
 | `monitor_badges` | Track badges. |
-| `monitor_rich_presence` | Track game rich presence, including CS2 details. |
+| `monitor_rich_presence` | Track game rich presence. CS2-specific parsing is controlled by `monitor_cs2`. |
+| `monitor_cs2` | Enable CS2-specific features: CS2 rich presence parsing, CS2 status notifications, match recording, and `/cs2today`. |
 
 ## Monitored Accounts
 

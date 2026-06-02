@@ -152,11 +152,13 @@ proxy = socks5://127.0.0.1:1080
 api_key = YOUR_STEAM_WEB_API_KEY
 poll_interval_seconds = 10
 status_reminder_interval_seconds = 3600
+persona_state_debounce_seconds = 120
 notify_on_start = true
 monitor_comments = true
 monitor_friends = true
 monitor_badges = true
 monitor_rich_presence = true
+monitor_cs2 = true
 ```
 
 Поля:
@@ -166,11 +168,13 @@ monitor_rich_presence = true
 | `api_key` | Steam Web API key. |
 | `poll_interval_seconds` | Интервал проверки Steam. Минимум в коде ограничен 10 секундами. |
 | `status_reminder_interval_seconds` | Интервал промежуточных напоминаний по активным online/game состояниям. `0` отключает напоминания. Для статуса `не в сети` напоминания не отправляются. |
+| `persona_state_debounce_seconds` | Сколько секунд новый Steam-статус `в сети` / `отошел` / `спит` должен продержаться перед уведомлением. `0` отключает фильтр. |
 | `notify_on_start` | Отправлять ли базовый статус при запуске. |
 | `monitor_comments` | Отслеживать комментарии профиля. |
 | `monitor_friends` | Отслеживать список друзей. |
 | `monitor_badges` | Отслеживать бейджи. |
-| `monitor_rich_presence` | Отслеживать rich presence игры, включая детали CS2. |
+| `monitor_rich_presence` | Отслеживать rich presence игры. CS2-спецразбор управляется `monitor_cs2`. |
+| `monitor_cs2` | Включать CS2-спецфункции: разбор CS2 rich presence, уведомления о статусе CS2, запись матчей и `/cs2today`. |
 
 ## Аккаунты для мониторинга
 

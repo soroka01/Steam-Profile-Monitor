@@ -6,7 +6,7 @@ import logging
 import os
 import re
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
@@ -105,11 +105,13 @@ class MonitorConfig:
     steamid_uk_watchlist_id: str
     poll_interval_seconds: int
     status_reminder_interval_seconds: int
+    persona_state_debounce_seconds: int
     notify_on_start: bool
     monitor_comments: bool
     monitor_friends: bool
     monitor_badges: bool
     monitor_rich_presence: bool
+    monitor_cs2: bool
     accounts: List[MonitoredAccount]
 
 
@@ -176,6 +178,8 @@ class AccountTimeline:
     last_cs2_score: str = ""
     last_reminder_at: Optional[datetime] = None
     last_reminder_key: str = ""
+    pending_persona_state: Optional[int] = None
+    pending_persona_since: Optional[datetime] = None
 
 
 @dataclass
@@ -322,6 +326,8 @@ def timeline_to_json(timeline: AccountTimeline) -> Dict[str, Any]:
         "last_cs2_score": timeline.last_cs2_score,
         "last_reminder_at": dt_to_json(timeline.last_reminder_at),
         "last_reminder_key": timeline.last_reminder_key,
+        "pending_persona_state": timeline.pending_persona_state,
+        "pending_persona_since": dt_to_json(timeline.pending_persona_since),
     }
 
 
@@ -338,6 +344,10 @@ def timeline_from_json(data: Dict[str, Any], fallback: datetime) -> AccountTimel
         last_cs2_score=data.get("last_cs2_score", ""),
         last_reminder_at=parse_dt(data.get("last_reminder_at")),
         last_reminder_key=data.get("last_reminder_key", ""),
+        pending_persona_state=int(data["pending_persona_state"])
+        if data.get("pending_persona_state") is not None
+        else None,
+        pending_persona_since=parse_dt(data.get("pending_persona_since")),
     )
 
 
@@ -487,11 +497,13 @@ def load_config(path: Path = CONFIG_PATH) -> MonitorConfig:
         steamid_uk_watchlist_id=_get_optional_config_value(config, "steamid_uk", "watchlist_id", "1"),
         poll_interval_seconds=max(MIN_POLL_INTERVAL_SECONDS, config.getint("steam", "poll_interval_seconds", fallback=60)),
         status_reminder_interval_seconds=max(0, config.getint("steam", "status_reminder_interval_seconds", fallback=3600)),
+        persona_state_debounce_seconds=max(0, config.getint("steam", "persona_state_debounce_seconds", fallback=120)),
         notify_on_start=_get_bool(config, "steam", "notify_on_start", False),
         monitor_comments=_get_bool(config, "steam", "monitor_comments", True),
         monitor_friends=_get_bool(config, "steam", "monitor_friends", True),
         monitor_badges=_get_bool(config, "steam", "monitor_badges", True),
         monitor_rich_presence=_get_bool(config, "steam", "monitor_rich_presence", True),
+        monitor_cs2=_get_bool(config, "steam", "monitor_cs2", True),
         accounts=accounts,
     )
 
@@ -1005,6 +1017,25 @@ class SteamProfileMonitor:
         self.comment_empty_observations: Dict[str, int] = {}
         self.load_state()
 
+    def command_list_text(self) -> str:
+        commands = ["/status", "/accounts"]
+        if self.config.monitor_cs2:
+            commands.append("/cs2today")
+        commands.append("/steamiduk")
+        return ", ".join(commands)
+
+    def start_help_text(self) -> str:
+        lines = [
+            "🟢 <b>Steam Profile Monitor работает</b>",
+            "",
+            "📊 /status — подробный статус и длительности",
+            "👥 /accounts — отслеживаемые SteamID",
+        ]
+        if self.config.monitor_cs2:
+            lines.append("🎯 /cs2today — матчи CS2 за сегодня")
+        lines.append("🧩 /steamiduk — данные SteamID.uk")
+        return "\n".join(lines)
+
     async def send(self, text: str) -> None:
         for attempt in range(1, len(TELEGRAM_SEND_RETRY_DELAYS) + 2):
             try:
@@ -1049,8 +1080,10 @@ class SteamProfileMonitor:
             f"🔁 Проверка: <b>{self.config.poll_interval_seconds} сек.</b>\n"
             f"⏰ Напоминания: <b>{html_text(format_interval(self.config.status_reminder_interval_seconds))}</b>"
             f"{' (кроме статуса «не в сети»)' if self.config.status_reminder_interval_seconds > 0 else ''}\n\n"
+            f"⏳ Фильтр Steam-статуса: <b>{html_text(format_interval(self.config.persona_state_debounce_seconds))}</b>\n\n"
+            f"🎯 CS2 функции: <b>{'включены' if self.config.monitor_cs2 else 'выключены'}</b>\n"
             f"🧩 SteamID.uk: <b>{'включен' if self.steamid_uk else 'выключен'}</b>\n\n"
-            "Команды: /status, /accounts, /cs2today, /steamiduk"
+            f"Команды: {html_text(self.command_list_text())}"
         )
 
         first_run = True
@@ -1107,10 +1140,11 @@ class SteamProfileMonitor:
                 account.steam_id,
                 self.timeline_for_initial_snapshot(old_snapshot, checked_at),
             )
-            events = await self.compare_snapshots(account, old_snapshot, new_snapshot, timeline, checked_at)
-            updated_timeline = self.next_timeline(timeline, old_snapshot, new_snapshot, checked_at)
+            effective_snapshot = self.debounced_snapshot(account, old_snapshot, new_snapshot, timeline, checked_at)
+            events = await self.compare_snapshots(account, old_snapshot, effective_snapshot, timeline, checked_at)
+            updated_timeline = self.next_timeline(timeline, old_snapshot, effective_snapshot, checked_at)
             self.timelines[account.steam_id] = updated_timeline
-            self.snapshots[account.steam_id] = new_snapshot
+            self.snapshots[account.steam_id] = effective_snapshot
 
             for event in events:
                 await self.send(event)
@@ -1291,6 +1325,44 @@ class SteamProfileMonitor:
             last_reminder_key=self.state_key(snapshot),
         )
 
+    def debounced_snapshot(
+        self,
+        account: MonitoredAccount,
+        old: AccountSnapshot,
+        new: AccountSnapshot,
+        timeline: AccountTimeline,
+        checked_at: datetime,
+    ) -> AccountSnapshot:
+        interval = self.config.persona_state_debounce_seconds
+        if interval <= 0:
+            timeline.pending_persona_state = None
+            timeline.pending_persona_since = None
+            return new
+
+        if not old.online or not new.online or old.game_id != new.game_id or old.game_id or old.persona_state == new.persona_state:
+            timeline.pending_persona_state = None
+            timeline.pending_persona_since = None
+            return new
+
+        if timeline.pending_persona_state != new.persona_state:
+            timeline.pending_persona_state = new.persona_state
+            timeline.pending_persona_since = checked_at
+            old_status = PERSONA_STATES.get(old.persona_state, str(old.persona_state))
+            new_status = PERSONA_STATES.get(new.persona_state, str(new.persona_state))
+            self.log_change(
+                checked_at,
+                account,
+                "persona_state_pending",
+                f"{old_status} -> {new_status}; debounce={interval} sec",
+            )
+            return replace(new, persona_state=old.persona_state)
+
+        pending_since = timeline.pending_persona_since or checked_at
+        if (checked_at - pending_since).total_seconds() < interval:
+            return replace(new, persona_state=old.persona_state)
+
+        return new
+
     def next_timeline(
         self,
         timeline: AccountTimeline,
@@ -1306,14 +1378,27 @@ class SteamProfileMonitor:
         old_key = self.state_key(old)
         new_key = self.state_key(new)
         last_reminder_at = timeline.last_reminder_at if old_key == new_key else None
+        if (
+            old.online
+            and new.online
+            and old.persona_state != new.persona_state
+            and timeline.pending_persona_state == new.persona_state
+            and timeline.pending_persona_since
+        ):
+            persona_started_at = timeline.pending_persona_since
+        pending_persona_state = timeline.pending_persona_state
+        pending_persona_since = timeline.pending_persona_since
+        if old_key != new_key:
+            pending_persona_state = None
+            pending_persona_since = None
         last_cs2_mode = timeline.last_cs2_mode
         last_cs2_map = timeline.last_cs2_map
         last_cs2_score = timeline.last_cs2_score
-        if new.game_id == CS2_APP_ID and new.cs2_score:
+        if self.config.monitor_cs2 and new.game_id == CS2_APP_ID and new.cs2_score:
             last_cs2_mode = new.cs2_mode
             last_cs2_map = new.cs2_map
             last_cs2_score = new.cs2_score
-        elif old.game_id != CS2_APP_ID and new.game_id != CS2_APP_ID:
+        elif not self.config.monitor_cs2 or (old.game_id != CS2_APP_ID and new.game_id != CS2_APP_ID):
             last_cs2_mode = ""
             last_cs2_map = ""
             last_cs2_score = ""
@@ -1330,6 +1415,8 @@ class SteamProfileMonitor:
             last_cs2_score=last_cs2_score,
             last_reminder_at=last_reminder_at,
             last_reminder_key=new_key,
+            pending_persona_state=pending_persona_state,
+            pending_persona_since=pending_persona_since,
         )
 
     def state_key(self, snapshot: AccountSnapshot) -> str:
@@ -1386,7 +1473,7 @@ class SteamProfileMonitor:
             f"state={PERSONA_STATES.get(snapshot.persona_state, snapshot.persona_state)}; "
             f"game={game}; "
             f"rich_presence={snapshot.rich_presence or '-'}; "
-            f"cs2={self.cs2_summary(snapshot) or '-'}; "
+            f"cs2={(self.cs2_summary(snapshot) or '-') if self.config.monitor_cs2 else 'disabled'}; "
             f"friends={format_optional_count(snapshot.friends)}; "
             f"badges={format_optional_count(snapshot.badges)}; "
             f"comments={format_optional_count(snapshot.comments)}; "
@@ -1502,6 +1589,16 @@ class SteamProfileMonitor:
 
     def format_cs2_daily_report(self) -> str:
         checked_at = now_local()
+        if not self.config.monitor_cs2:
+            return "\n".join(
+                [
+                    "🎯 <b>CS2 функции отключены</b>",
+                    f"🕒 <code>{html_text(format_dt(checked_at))}</code>",
+                    "",
+                    "Включите <code>monitor_cs2 = true</code> в <code>config.ini</code>, чтобы бот снова разбирал CS2 rich presence и записывал матчи.",
+                ]
+            )
+
         lines = [
             "📅 <b>CS2 матчи за сегодня</b>",
             f"🕒 <code>{html_text(format_dt(checked_at))}</code>",
@@ -1522,7 +1619,11 @@ class SteamProfileMonitor:
     def current_state_text(self, snapshot: AccountSnapshot) -> str:
         status = PERSONA_STATES.get(snapshot.persona_state, str(snapshot.persona_state))
         if snapshot.game_id:
-            rich_presence = self.cs2_summary(snapshot) if snapshot.game_id == CS2_APP_ID else snapshot.rich_presence
+            rich_presence = (
+                self.cs2_summary(snapshot)
+                if self.config.monitor_cs2 and snapshot.game_id == CS2_APP_ID
+                else snapshot.rich_presence
+            )
             suffix = f" — {rich_presence}" if rich_presence else ""
             return f"в игре: {snapshot.game_name or snapshot.game_id}{suffix}"
         if snapshot.online:
@@ -1561,13 +1662,14 @@ class SteamProfileMonitor:
                 f"🟢 В сети: <b>{html_text(format_duration(timeline.online_started_at, checked_at))}</b>",
                 f"🎮 В игре: <b>{html_text(format_duration(timeline.game_started_at, checked_at))}</b>",
             ]
-            if snapshot.game_id == CS2_APP_ID and not snapshot.cs2_score:
+            if self.config.monitor_cs2 and snapshot.game_id == CS2_APP_ID and not snapshot.cs2_score:
                 last_score = self.last_cs2_score_text(timeline)
                 if last_score:
                     lines.append(f"🏁 Последний счёт: <b>{html_text(last_score)}</b>")
             return lines
         if snapshot.online:
             return [
+                f"⏳ В статусе Steam: <b>{html_text(format_duration(self.state_started_at(snapshot, timeline), checked_at))}</b>",
                 f"🟢 В сети: <b>{html_text(format_duration(timeline.online_started_at, checked_at))}</b>",
                 f"☕ Без игры: <b>{html_text(format_duration(timeline.idle_started_at, checked_at))}</b>",
             ]
@@ -1793,7 +1895,7 @@ class SteamProfileMonitor:
             details.append("<b>Бейджи</b>")
             details.extend(self.badge_detail_html(badge_key, snapshot.known_badges) for badge_key in sorted(snapshot.badges))
 
-        if snapshot.game_id == CS2_APP_ID and snapshot.rich_presence:
+        if self.config.monitor_cs2 and snapshot.game_id == CS2_APP_ID and snapshot.rich_presence:
             details.append(f"🎯 CS2 rich presence: <b>{html_text(self.cs2_summary(snapshot) or snapshot.rich_presence)}</b>")
 
         if snapshot.comments:
@@ -1836,7 +1938,7 @@ class SteamProfileMonitor:
             in_game = miniprofile.get("in_game", {}) if isinstance(miniprofile, dict) else {}
             rich_presence = str(in_game.get("rich_presence") or "").strip() if isinstance(in_game, dict) else ""
             snapshot.rich_presence = rich_presence
-            if snapshot.game_id == CS2_APP_ID and rich_presence:
+            if self.config.monitor_cs2 and snapshot.game_id == CS2_APP_ID and rich_presence:
                 snapshot.cs2_mode, snapshot.cs2_map, snapshot.cs2_score = parse_cs2_rich_presence(rich_presence)
 
         if self.config.monitor_friends:
@@ -1861,7 +1963,8 @@ class SteamProfileMonitor:
         events: List[str] = []
         display_timeline = self.next_timeline(timeline, old, new, checked_at)
         cs2_match_completed = bool(
-            old.game_id == CS2_APP_ID
+            self.config.monitor_cs2
+            and old.game_id == CS2_APP_ID
             and old.cs2_mode in {"Premier", "Competitive"}
             and old.cs2_score
             and (new.game_id != CS2_APP_ID or not new.cs2_score)
@@ -1918,7 +2021,7 @@ class SteamProfileMonitor:
                 )
             )
 
-        if old.game_id == CS2_APP_ID and new.game_id == CS2_APP_ID and old.rich_presence != new.rich_presence:
+        if self.config.monitor_cs2 and old.game_id == CS2_APP_ID and new.game_id == CS2_APP_ID and old.rich_presence != new.rich_presence:
             if old.cs2_score and new.cs2_score:
                 self.log_change(
                     checked_at,
@@ -1964,7 +2067,7 @@ class SteamProfileMonitor:
                 f"Игра: {old.game_name or old.game_id}",
                 f"Время в игре: {format_duration(timeline.game_started_at, checked_at)}",
             ]
-            if old.game_id == CS2_APP_ID:
+            if self.config.monitor_cs2 and old.game_id == CS2_APP_ID:
                 if old.rich_presence:
                     details.append(f"Последний статус CS2: {old.rich_presence}")
                 if self.last_cs2_score_text(display_timeline):
@@ -1979,7 +2082,7 @@ class SteamProfileMonitor:
 
         if new.game_id and old.game_id != new.game_id:
             details = [f"Игра: {new.game_name or new.game_id}"]
-            if new.game_id == CS2_APP_ID and new.rich_presence:
+            if self.config.monitor_cs2 and new.game_id == CS2_APP_ID and new.rich_presence:
                 details.append(f"Статус CS2: {self.cs2_summary(new) or new.rich_presence}")
             if old.online and not old.game_id:
                 details.append(f"До этого был в сети без игры: {format_duration(timeline.idle_started_at, checked_at)}")
@@ -2223,14 +2326,7 @@ async def main() -> None:
 
         @dispatcher.message(Command("start"))
         async def start_command(message: Message) -> None:
-            await monitor.send_private(
-                message,
-                "🟢 <b>Steam Profile Monitor работает</b>\n\n"
-                "📊 /status — подробный статус и длительности\n"
-                "👥 /accounts — отслеживаемые SteamID\n"
-                "🎯 /cs2today — матчи CS2 за сегодня\n"
-                "🧩 /steamiduk — данные SteamID.uk",
-            )
+            await monitor.send_private(message, monitor.start_help_text())
 
         @dispatcher.message(Command("status"))
         async def status_command(message: Message) -> None:

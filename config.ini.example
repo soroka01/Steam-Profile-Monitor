@@ -11,11 +11,13 @@ allowed_user_id = YOUR_TELEGRAM_USER_ID
 api_key = YOUR_STEAM_WEB_API_KEY
 poll_interval_seconds = 10
 status_reminder_interval_seconds = 3600
+persona_state_debounce_seconds = 120
 notify_on_start = true
 monitor_comments = true
 monitor_friends = true
 monitor_badges = true
 monitor_rich_presence = true
+monitor_cs2 = true
 
 [steamid_uk]
 enabled = false
