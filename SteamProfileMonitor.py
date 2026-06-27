@@ -5,21 +5,38 @@ import json
 import logging
 import os
 import re
+import sys
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
+
+BASE_DIR = Path(__file__).resolve().parent
+
+
+def ensure_project_venv() -> None:
+    venv_python = BASE_DIR / ".venv" / "Scripts" / "python.exe"
+    if not venv_python.exists():
+        return
+
+    current_python = Path(sys.executable).resolve()
+    if current_python == venv_python.resolve():
+        return
+
+    os.execv(str(venv_python), [str(venv_python), str(Path(__file__).resolve()), *sys.argv[1:]])
+
+
+ensure_project_venv()
+
 import aiohttp
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.exceptions import TelegramNetworkError
+from aiogram.exceptions import TelegramNetworkError, TelegramUnauthorizedError
 from aiogram.filters import Command
 from aiogram.types import Message
 
-
-BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.ini"
 LOG_PATH = BASE_DIR / "steam_profile_monitor.log"
 CHANGES_LOG_PATH = BASE_DIR / "steam_profile_changes.log"
@@ -2315,6 +2332,15 @@ async def main() -> None:
     async with aiohttp.ClientSession(timeout=timeout) as session:
         telegram_session = AiohttpSession(proxy=config.telegram_proxy, timeout=30)
         bot = Bot(token=config.bot_token, session=telegram_session)
+        try:
+            bot_info = await bot.get_me()
+        except TelegramUnauthorizedError:
+            logger.error("Telegram bot token is invalid. Check bot_token in config.ini.")
+            print("Telegram bot token is invalid. Check bot_token in config.ini.")
+            await bot.session.close()
+            return
+
+        logger.info("Telegram bot authorized as @%s", bot_info.username or bot_info.id)
         steam = SteamApiClient(config.steam_api_key, session)
         steamid_uk = (
             SteamIdUkClient(config.steamid_uk_api_key, config.steamid_uk_myid, session)
@@ -2359,6 +2385,10 @@ async def main() -> None:
             while True:
                 try:
                     await dispatcher.start_polling(bot, close_bot_session=False)
+                    break
+                except TelegramUnauthorizedError:
+                    logger.error("Telegram bot token is invalid. Check bot_token in config.ini.")
+                    print("Telegram bot token is invalid. Check bot_token in config.ini.")
                     break
                 except TelegramNetworkError as exc:
                     logger.warning("Нет соединения с Telegram API: %s", exc)

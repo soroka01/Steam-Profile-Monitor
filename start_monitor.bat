@@ -18,5 +18,6 @@ if not exist "config.ini" (
 )
 
 call .venv\Scripts\activate
+
 python SteamProfileMonitor.py
 pause
