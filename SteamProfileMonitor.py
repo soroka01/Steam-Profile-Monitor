@@ -2000,9 +2000,7 @@ class SteamProfileMonitor:
         if old.online and new.online and old.persona_state != new.persona_state:
             old_status = PERSONA_STATES.get(old.persona_state, str(old.persona_state))
             new_status = PERSONA_STATES.get(new.persona_state, str(new.persona_state))
-            details = [f"Было: {old_status}", f"Стало: {new_status}"]
             self.log_change(checked_at, account, "persona_state_changed", f"{old_status} -> {new_status}")
-            events.append(self.format_event_message(account, new, display_timeline, checked_at, "изменился статус Steam", details))
 
         if old.game_id and new.game_id and old.game_id == new.game_id and old.game_name != new.game_name:
             details = [f"GameID: {new.game_id}", f"Было: {old.game_name or old.game_id}", f"Стало: {new.game_name or new.game_id}"]
