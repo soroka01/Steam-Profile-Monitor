@@ -29,10 +29,10 @@ sync_watchlist = false
 watchlist_id = 1
 
 [accounts]
-71321111000000002 = Main
-72321111000000002 = Twink
- 
+76561198000000001 = Main
+76561198000000002 = Alt
+
 ; Можно также задавать аккаунты отдельными секциями:
 ; [account:my_second_format]
-; steam_id = 74321111000000002
+; steam_id = 76561198000000003
 ; label = Another account
