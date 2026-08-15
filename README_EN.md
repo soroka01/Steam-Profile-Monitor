@@ -4,7 +4,7 @@
 
 🌐 **Language:** [Русский](README.md) · [English](README_EN.md)
 
-![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![Python 3.14+](https://img.shields.io/badge/Python-3.14%2B-3776AB?logo=python&logoColor=white)
 ![aiogram](https://img.shields.io/badge/aiogram-Telegram_bot-26A5E4?logo=telegram&logoColor=white)
 ![Steam Web API](https://img.shields.io/badge/Steam-Web_API-171A21?logo=steam&logoColor=white)
 ![MIT License](https://img.shields.io/badge/License-MIT-2EA44F.svg)
@@ -54,7 +54,8 @@ The first successful read of a new account stores and sends a baseline. Later ch
 
 ## 📋 Requirements
 
-- Python 3.10 or newer;
+- Python 3.14 or newer (the latest 3.14.6 patch is recommended);
+- pip 26.1.2, setuptools 84.0.0, and wheel 0.48.0 (the launchers upgrade them automatically);
 - a Telegram bot token from [@BotFather](https://t.me/BotFather);
 - a Steam Web API key from <https://steamcommunity.com/dev/apikey>;
 - SteamID64 values for public accounts;

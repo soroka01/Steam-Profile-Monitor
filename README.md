@@ -4,7 +4,7 @@
 
 🌐 **Язык:** [Русский](README.md) · [English](README_EN.md)
 
-![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![Python 3.14+](https://img.shields.io/badge/Python-3.14%2B-3776AB?logo=python&logoColor=white)
 ![aiogram](https://img.shields.io/badge/aiogram-Telegram_bot-26A5E4?logo=telegram&logoColor=white)
 ![Steam Web API](https://img.shields.io/badge/Steam-Web_API-171A21?logo=steam&logoColor=white)
 ![MIT License](https://img.shields.io/badge/License-MIT-2EA44F.svg)
@@ -54,7 +54,8 @@ snapshot + diff
 
 ## 📋 Требования
 
-- Python 3.10 или новее;
+- Python 3.14 или новее (рекомендуется актуальный патч 3.14.6);
+- pip 26.1.2, setuptools 84.0.0 и wheel 0.48.0 (launcher обновляет их автоматически);
 - Telegram bot token от [@BotFather](https://t.me/BotFather);
 - Steam Web API key со страницы <https://steamcommunity.com/dev/apikey>;
 - SteamID64 публичных аккаунтов;
