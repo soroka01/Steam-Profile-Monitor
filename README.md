@@ -1,75 +1,18 @@
-# 🎮 Steam Profile Monitor
+# Steam Profile Monitor
 
-> Telegram-бот для отслеживания изменений публичных Steam-профилей, игровой активности и CS2 с локальным состоянием и уведомлениями.
+[Русский](README.md) · [English](README_EN.md)
 
-🌐 **Язык:** [Русский](README.md) · [English](README_EN.md)
+Монитор публичных Steam-профилей с уведомлениями в Telegram. Отслеживает изменения профиля и активности, сохраняет состояние и историю локально.
 
-![Python 3.14+](https://img.shields.io/badge/Python-3.14%2B-3776AB?logo=python&logoColor=white)
-![aiogram](https://img.shields.io/badge/aiogram-Telegram_bot-26A5E4?logo=telegram&logoColor=white)
-![Steam Web API](https://img.shields.io/badge/Steam-Web_API-171A21?logo=steam&logoColor=white)
-![MIT License](https://img.shields.io/badge/License-MIT-2EA44F.svg)
+## Требования
 
-## ✨ Обзор
-
-Steam Profile Monitor периодически опрашивает Steam Web API и публичные страницы Steam Community, сравнивает новый снимок профиля с предыдущим и отправляет изменения в Telegram. Состояние и журналы остаются на вашем компьютере, поэтому монитор продолжает работу после перезапуска и не требует отдельной базы данных.
-
-Проект рассчитан на личный мониторинг небольшого списка публичных SteamID64. Он не обходит настройки приватности Steam и не является официальным продуктом Valve или Telegram.
-
-## 🚀 Возможности
-
-- уведомления о входе в сеть и выходе из сети;
-- уведомления о запуске игры, смене игры и выходе из игры;
-- отслеживание имени и URL профиля;
-- текущие persona states Steam в снимках, `/status` и журналах;
-- изменения списка друзей;
-- новые, удалённые и обновлённые бейджи;
-- новые и исчезнувшие комментарии профиля;
-- CS2 rich presence: режим, карта, счёт и завершение матча;
-- дневная статистика CS2 по победам, поражениям и ничьим;
-- периодические напоминания для активного online/game состояния;
-- локальное состояние, общий журнал, журнал изменений и отдельные журналы аккаунтов;
-- опциональные сведения SteamID.uk: баны, история, watch list и private notes summary.
-
-**Важно:** изменения persona state между `online`, `busy`, `away` и похожими состояниями сейчас фиксируются в состоянии и журналах, но не создают отдельное push-уведомление.
-
-## 🏗️ Как это работает
-
-```text
-config.ini
-    │
-    ▼
-SteamProfileMonitor.py
-    ├── Steam Web API ─────── profile, game, friends, badges
-    ├── Steam Community ───── rich presence, comments
-    └── SteamID.uk (optional) bans, history, watch list
-    │
-    ▼
-snapshot + diff
-    ├── Telegram notifications and commands
-    ├── steam_monitor_state.json
-    └── runtime and per-account logs
-```
-
-При первом успешном чтении нового аккаунта монитор сохраняет baseline и отправляет его в Telegram. При следующих проверках отправляются только обнаруженные изменения и настроенные напоминания. Если state-файл уже содержит аккаунт, работа продолжается с сохранённого снимка.
-
-## 📋 Требования
-
-- Python 3.14 или новее (рекомендуется актуальный патч 3.14.6);
-- pip 26.1.2, setuptools 84.0.0 и wheel 0.48.0 (launcher обновляет их автоматически);
+- Python 3.14 или новее;
 - Telegram bot token от [@BotFather](https://t.me/BotFather);
 - Steam Web API key со страницы <https://steamcommunity.com/dev/apikey>;
 - SteamID64 публичных аккаунтов;
 - Telegram-чат, группа или канал, куда бот может отправлять сообщения.
 
-Основные зависимости:
-
-| Пакет | Назначение |
-| --- | --- |
-| `aiogram` | Telegram Bot API и команды |
-| `aiohttp` | асинхронные запросы к Steam и SteamID.uk |
-| `aiohttp-socks` | HTTP/SOCKS proxy для Telegram |
-
-## ⚙️ Установка и запуск
+## Быстрый старт
 
 ### 1. Клонируйте репозиторий
 
@@ -124,7 +67,16 @@ python -m pip install -r requirements.txt
 python SteamProfileMonitor.py
 ```
 
-## ⚙️ Конфигурация
+## Как это работает
+
+```mermaid
+flowchart TD
+    A["Steam Web API + public profiles"] --> B["Snapshot comparison"]
+    B["Snapshot comparison"] --> C["Local state and logs"]
+    C["Local state and logs"] --> D["Telegram notifications"]
+```
+
+## Настройки
 
 ### Telegram
 
@@ -224,7 +176,7 @@ STEAMID_UK_MYID
 
 `sync_watchlist = true` изменяет ваш watch list в SteamID.uk. Включайте его только намеренно.
 
-## 🤖 Команды Telegram
+## Команды Telegram
 
 | Команда | Действие |
 | --- | --- |
@@ -236,7 +188,7 @@ STEAMID_UK_MYID
 
 `/cs2today` полезен только при `monitor_cs2 = true`. `/steamiduk` сообщает, что интеграция выключена, если credentials не настроены.
 
-## 💾 Локальные данные
+## Локальные данные
 
 | Файл или каталог | Содержимое |
 | --- | --- |
@@ -248,7 +200,7 @@ STEAMID_UK_MYID
 
 Эти пути исключены из Git. Не публикуйте их вместе с архивом проекта или диагностикой.
 
-## 🔐 Безопасность
+## Безопасность
 
 - Никогда не коммитьте `config.ini`, bot token, Steam API key или SteamID.uk credentials.
 - Укажите `allowed_user_id`, особенно если бот имеет публичный username.
@@ -256,7 +208,7 @@ STEAMID_UK_MYID
 - После случайной публикации немедленно отзовите и перевыпустите затронутый token или key.
 - Перед включением SteamID.uk watchlist sync учитывайте, что это внешнее изменение данных.
 
-## ⚠️ Ограничения
+## Ограничения
 
 - Закрытые профили и отдельные приватные разделы могут выглядеть пустыми или offline.
 - Монитор читает только первые 10 комментариев из ответа Steam Community.
@@ -264,26 +216,16 @@ STEAMID_UK_MYID
 - Завершение CS2-матча определяется эвристически по rich presence, а не официальному match history.
 - Persona-state transitions не создают отдельного push-уведомления.
 - `notify_on_start` сейчас не управляет baseline: новый аккаунт получает baseline, существующий state продолжается без него.
-- Тексты Telegram и runtime logs преимущественно русскоязычные.
+- Тексты Telegram и журналы преимущественно русскоязычные.
 
-## 🧪 Проверка и диагностика
+## Лицензия
 
-В репозитории пока нет автоматических тестов и CI. Без реальных credentials можно проверить синтаксис и конфигурацию, но полноценная проверка требует доступа к Telegram и Steam.
+[MIT](LICENSE).
 
-Если монитор не запускается:
+## Поддержка
 
-1. Проверьте наличие и синтаксис `config.ini`.
-2. Установите зависимости: `python -m pip install -r requirements.txt`.
-3. Проверьте bot token, `chat_id` и Steam Web API key.
-4. Убедитесь, что SteamID64 начинается с корректного диапазона `765...`.
-5. Изучите `steam_profile_monitor.log`.
-
-Если не видны друзья, бейджи, комментарии или игра, сначала проверьте приватность соответствующих разделов Steam.
-
-## 📄 Лицензия
-
-Проект распространяется по лицензии [MIT](LICENSE).
+Можно [форкнуть репозиторий](https://github.com/soroka01/Steam-Profile-Monitor/fork) и доработать под себя. Если проект пригодился, поставьте [Star](https://github.com/soroka01/Steam-Profile-Monitor) — так я увижу, что он был кому-то полезен.
 
 ---
 
-Сделано для личного мониторинга с уважением к настройкам приватности Steam и Telegram.
+with love ❤️
