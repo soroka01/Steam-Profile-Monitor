@@ -1,17 +1,16 @@
 import asyncio
 from contextlib import suppress
 
-from aiogram import Bot, Dispatcher
+from aiogram import Bot, Dispatcher, F
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramNetworkError, TelegramUnauthorizedError
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import BotCommand, CallbackQuery, Message
 import aiohttp
 
 from .clients import SteamApiClient, SteamIdUkClient
 from .config import load_config
-from .core import STEAM_COMMUNITY_BASE, logger
-from .helpers import html_attr, html_text
+from .core import logger
 from .monitor import SteamProfileMonitor
 
 
@@ -44,30 +43,25 @@ async def main() -> None:
         async def start_command(message: Message) -> None:
             await monitor.send_private(message, monitor.start_help_text())
 
-        @dispatcher.message(Command("status"))
-        async def status_command(message: Message) -> None:
-            await monitor.send_private(message, monitor.format_status_report())
+        def register_command(action: str) -> None:
+            @dispatcher.message(Command(action))
+            async def command_handler(message: Message) -> None:
+                await monitor.handle_menu_command(message, action)
 
-        @dispatcher.message(Command("accounts"))
-        async def accounts_command(message: Message) -> None:
-            lines = ["👥 <b>Отслеживаемые аккаунты</b>"]
-            for account in config.accounts:
-                profile_url = f"{STEAM_COMMUNITY_BASE}/profiles/{account.steam_id}"
-                lines.append(
-                    f"\n👤 <b>{html_text(account.label)}</b>\n"
-                    f"🆔 <code>{html_text(account.steam_id)}</code>\n"
-                    f"🔗 <a href=\"{html_attr(profile_url)}\">Steam profile</a>"
-                )
-            await monitor.send_private(message, "\n".join(lines))
+        for action, _, _ in monitor.available_actions():
+            register_command(action)
 
-        @dispatcher.message(Command("cs2today"))
-        async def cs2today_command(message: Message) -> None:
-            await monitor.send_private(message, monitor.format_cs2_daily_report())
+        @dispatcher.callback_query(F.data.startswith("menu:"))
+        async def menu_callback(callback: CallbackQuery) -> None:
+            await monitor.handle_menu_callback(callback)
 
-        @dispatcher.message(Command("steamiduk"))
-        async def steamiduk_command(message: Message) -> None:
-            await monitor.refresh_all_steamid_uk_profiles(force=True)
-            await monitor.send_private(message, monitor.format_steamid_uk_report())
+        try:
+            await bot.set_my_commands(
+                [BotCommand(command="start", description="Меню")]
+                + [BotCommand(command=action, description=desc) for action, _, desc in monitor.available_actions()]
+            )
+        except TelegramNetworkError as exc:
+            logger.warning("Не удалось обновить меню команд Telegram: %s", exc)
 
         monitor_task = asyncio.create_task(monitor.run_forever())
         try:

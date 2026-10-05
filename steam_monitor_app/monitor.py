@@ -1,13 +1,13 @@
 from dataclasses import replace
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 import asyncio
 import json
 import logging
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramNetworkError
-from aiogram.types import Message
+from aiogram.exceptions import TelegramBadRequest, TelegramNetworkError
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, User
 
 from .clients import SteamApiClient, SteamIdUkClient
 from .core import ACCOUNT_LOG_DIR, AccountSnapshot, AccountTimeline, BadgeInfo, COMMENT_EMPTY_CONFIRMATIONS_REQUIRED, CS2MatchRecord, CS2_APP_ID, CommentInfo, FriendInfo, MINIPROFILE_APP_ID_KEYS, MINIPROFILE_GAME_NAME_KEYS, MonitorConfig, MonitoredAccount, PERSONA_STATES, STATE_PATH, STEAM_COMMUNITY_BASE, SteamIdUkProfile, TELEGRAM_SEND_RETRY_DELAYS, change_logger, log_formatter, logger
@@ -38,24 +38,116 @@ class SteamProfileMonitor:
         self.comment_empty_observations: Dict[str, int] = {}
         self.load_state()
 
-    def command_list_text(self) -> str:
-        commands = ["/status", "/accounts"]
-        if self.config.monitor_cs2:
-            commands.append("/cs2today")
-        commands.append("/steamiduk")
-        return ", ".join(commands)
-
-    def start_help_text(self) -> str:
-        lines = [
-            "🟢 <b>Steam Profile Monitor работает</b>",
-            "",
-            "📊 /status — подробный статус и длительности",
-            "👥 /accounts — отслеживаемые SteamID",
+    def available_actions(self) -> List[Tuple[str, str, str]]:
+        """(action, button label, command description) for every bot command."""
+        actions = [
+            ("status", "📊 Статус", "Статус и длительности"),
+            ("accounts", "👥 Аккаунты", "Отслеживаемые SteamID"),
         ]
         if self.config.monitor_cs2:
-            lines.append("🎯 /cs2today — матчи CS2 за сегодня")
-        lines.append("🧩 /steamiduk — данные SteamID.uk")
+            actions.append(("cs2today", "🎯 CS2 сегодня", "Матчи CS2 за сегодня"))
+        actions.append(("steamiduk", "🧩 SteamID.uk", "Данные SteamID.uk"))
+        return actions
+
+    def command_list_text(self) -> str:
+        return ", ".join(f"/{action}" for action, _, _ in self.available_actions())
+
+    def start_help_text(self) -> str:
+        lines = ["🟢 <b>Steam Profile Monitor работает</b>", ""]
+        lines.extend(
+            f"{label.split(' ', 1)[0]} /{action} — {html_text(description)}"
+            for action, label, description in self.available_actions()
+        )
+        lines.append("\nИли выберите действие кнопкой ниже 👇")
         return "\n".join(lines)
+
+    def menu_keyboard(self, refresh_action: Optional[str] = None) -> InlineKeyboardMarkup:
+        buttons = [
+            InlineKeyboardButton(text=label, callback_data=f"menu:{action}")
+            for action, label, _ in self.available_actions()
+            if action != refresh_action
+        ]
+        rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+        if refresh_action:
+            rows.insert(0, [InlineKeyboardButton(text="🔄 Обновить", callback_data=f"menu:{refresh_action}")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    def format_accounts_report(self) -> str:
+        lines = ["👥 <b>Отслеживаемые аккаунты</b>"]
+        for account in self.config.accounts:
+            profile_url = f"{STEAM_COMMUNITY_BASE}/profiles/{account.steam_id}"
+            lines.append(
+                f"\n👤 <b>{html_text(account.label)}</b>\n"
+                f"🆔 <code>{html_text(account.steam_id)}</code>\n"
+                f"🔗 <a href=\"{html_attr(profile_url)}\">Steam profile</a>"
+            )
+        return "\n".join(lines)
+
+    async def build_action_text(self, action: str) -> Optional[str]:
+        if action == "status":
+            return self.format_status_report()
+        if action == "accounts":
+            return self.format_accounts_report()
+        if action == "cs2today" and self.config.monitor_cs2:
+            return self.format_cs2_daily_report()
+        if action == "steamiduk":
+            await self.refresh_all_steamid_uk_profiles(force=True)
+            return self.format_steamid_uk_report()
+        return None
+
+    def is_allowed(self, user: Optional[User]) -> bool:
+        return not (self.config.allowed_user_id and user and user.id != self.config.allowed_user_id)
+
+    async def send_private(self, message: Message, text: str, action: Optional[str] = None) -> None:
+        if not self.is_allowed(message.from_user):
+            await message.answer("🔒 <b>Доступ ограничен.</b>", parse_mode="HTML")
+            return
+        chunks = split_message(text)
+        for index, chunk in enumerate(chunks):
+            is_last = index == len(chunks) - 1
+            await message.answer(
+                chunk,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=self.menu_keyboard(action) if is_last else None,
+            )
+
+    async def handle_menu_command(self, message: Message, action: str) -> None:
+        if not self.is_allowed(message.from_user):
+            await self.send_private(message, "")
+            return
+        text = await self.build_action_text(action)
+        if text:
+            await self.send_private(message, text, action=action)
+
+    async def handle_menu_callback(self, callback: CallbackQuery) -> None:
+        if not self.is_allowed(callback.from_user):
+            await callback.answer("🔒 Доступ ограничен", show_alert=True)
+            return
+        action = (callback.data or "").split(":", 1)[-1]
+        await callback.answer("Обновляю…")
+        text = await self.build_action_text(action)
+        if not text or not isinstance(callback.message, Message):
+            return
+        chunks = split_message(text)
+        try:
+            await callback.message.edit_text(
+                chunks[0],
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=self.menu_keyboard(action) if len(chunks) == 1 else None,
+            )
+        except TelegramBadRequest as exc:
+            if "message is not modified" not in str(exc):
+                raise
+            return
+        for index, chunk in enumerate(chunks[1:], start=1):
+            await callback.message.answer(
+                chunk,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=self.menu_keyboard(action) if index == len(chunks) - 1 else None,
+            )
 
     async def send(self, text: str) -> None:
         for attempt in range(1, len(TELEGRAM_SEND_RETRY_DELAYS) + 2):
@@ -73,13 +165,6 @@ class SteamProfileMonitor:
 
             if attempt <= len(TELEGRAM_SEND_RETRY_DELAYS):
                 await asyncio.sleep(TELEGRAM_SEND_RETRY_DELAYS[attempt - 1])
-
-    async def send_private(self, message: Message, text: str) -> None:
-        if self.config.allowed_user_id and message.from_user and message.from_user.id != self.config.allowed_user_id:
-            await message.answer("🔒 <b>Доступ ограничен.</b>", parse_mode="HTML")
-            return
-        for chunk in split_message(text):
-            await message.answer(chunk, parse_mode="HTML", disable_web_page_preview=True)
 
     async def run_forever(self) -> None:
         logger.info("Мониторинг запущен. Аккаунтов: %s", len(self.config.accounts))
