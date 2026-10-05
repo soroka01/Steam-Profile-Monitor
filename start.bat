@@ -3,6 +3,7 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 chcp 65001 >nul 2>&1
 set "PYTHONUTF8=1"
+title Steam monitor
 
 if not exist "config.ini" (
     echo [ERROR] config.ini was not found.

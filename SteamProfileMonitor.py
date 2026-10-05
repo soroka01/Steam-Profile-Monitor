@@ -52,6 +52,8 @@ STEAM_RETRY_DELAYS = (2, 5, 10)
 TELEGRAM_SEND_RETRY_DELAYS = (2, 5, 10)
 MIN_POLL_INTERVAL_SECONDS = 10
 COMMENT_EMPTY_CONFIRMATIONS_REQUIRED = 2
+MINIPROFILE_APP_ID_KEYS = ("app_id", "appid", "appId", "game_id", "gameid")
+MINIPROFILE_GAME_NAME_KEYS = ("name", "game_name", "gameName", "game", "title")
 
 
 def local_timezone() -> timezone:
@@ -645,6 +647,21 @@ def parse_cs2_rich_presence(value: str) -> Tuple[str, str, str]:
     return "", "", ""
 
 
+def normalize_game_name(value: Any) -> str:
+    value = html.unescape(str(value or "")).casefold()
+    value = re.sub(r"[\u2122\u00ae\u00a9]", "", value)
+    value = re.sub(r"\s+", " ", value)
+    return value.strip()
+
+
+def first_present(data: Dict[str, Any], keys: Iterable[str]) -> Any:
+    for key in keys:
+        value = data.get(key)
+        if value:
+            return value
+    return None
+
+
 def score_result(score: str) -> str:
     match = re.match(r"^\s*(\d+)\s*:\s*(\d+)\s*$", score)
     if not match:
@@ -1166,7 +1183,7 @@ class SteamProfileMonitor:
             for event in events:
                 await self.send(event)
 
-            reminder = self.maybe_status_reminder(account, new_snapshot, updated_timeline, checked_at)
+            reminder = self.maybe_status_reminder(account, effective_snapshot, updated_timeline, checked_at)
             if reminder:
                 await self.send(reminder)
 
@@ -1446,11 +1463,21 @@ class SteamProfileMonitor:
     def state_started_at(self, snapshot: AccountSnapshot, timeline: AccountTimeline) -> datetime:
         if snapshot.game_id and timeline.game_started_at:
             return timeline.game_started_at
-        if snapshot.online and timeline.persona_started_at:
-            return timeline.persona_started_at
-        if snapshot.online and timeline.online_started_at:
-            return timeline.online_started_at
+        if snapshot.online:
+            return timeline.idle_started_at or timeline.persona_started_at or timeline.online_started_at or timeline.observed_since
         return timeline.offline_started_at or timeline.observed_since
+
+    def steam_status_started_at(self, snapshot: AccountSnapshot, timeline: AccountTimeline) -> datetime:
+        if snapshot.online:
+            return timeline.persona_started_at or timeline.online_started_at or timeline.observed_since
+        return timeline.offline_started_at or timeline.observed_since
+
+    def should_send_status_reminder(self, snapshot: AccountSnapshot) -> bool:
+        if not snapshot.online:
+            return False
+        if not snapshot.game_id and snapshot.persona_state in {1, 3}:
+            return False
+        return True
 
     def maybe_status_reminder(
         self,
@@ -1463,7 +1490,7 @@ class SteamProfileMonitor:
         if interval <= 0:
             return None
 
-        if not snapshot.online:
+        if not self.should_send_status_reminder(snapshot):
             return None
 
         state_started_at = self.state_started_at(snapshot, timeline)
@@ -1686,7 +1713,7 @@ class SteamProfileMonitor:
             return lines
         if snapshot.online:
             return [
-                f"⏳ В статусе Steam: <b>{html_text(format_duration(self.state_started_at(snapshot, timeline), checked_at))}</b>",
+                f"⏳ В статусе Steam: <b>{html_text(format_duration(self.steam_status_started_at(snapshot, timeline), checked_at))}</b>",
                 f"🟢 В сети: <b>{html_text(format_duration(timeline.online_started_at, checked_at))}</b>",
                 f"☕ Без игры: <b>{html_text(format_duration(timeline.idle_started_at, checked_at))}</b>",
             ]
@@ -1922,6 +1949,20 @@ class SteamProfileMonitor:
 
         return details
 
+    def miniprofile_matches_current_game(self, snapshot: AccountSnapshot, in_game: Any) -> bool:
+        if not snapshot.game_id or not isinstance(in_game, dict):
+            return False
+
+        app_id = first_present(in_game, MINIPROFILE_APP_ID_KEYS)
+        if app_id is not None and str(app_id).strip() == snapshot.game_id:
+            return True
+
+        miniprofile_name = first_present(in_game, MINIPROFILE_GAME_NAME_KEYS)
+        if miniprofile_name and snapshot.game_name:
+            return normalize_game_name(miniprofile_name) == normalize_game_name(snapshot.game_name)
+
+        return snapshot.game_id == CS2_APP_ID
+
     async def build_snapshot(self, account: MonitoredAccount, player: Dict[str, Any]) -> AccountSnapshot:
         visibility_state = int(player.get("communityvisibilitystate", 0) or 0)
         if visibility_state and visibility_state != 3 and account.steam_id not in self.visibility_warnings:
@@ -1954,8 +1995,9 @@ class SteamProfileMonitor:
             miniprofile = await self.steam.get_miniprofile(account.steam_id)
             in_game = miniprofile.get("in_game", {}) if isinstance(miniprofile, dict) else {}
             rich_presence = str(in_game.get("rich_presence") or "").strip() if isinstance(in_game, dict) else ""
-            snapshot.rich_presence = rich_presence
-            if self.config.monitor_cs2 and snapshot.game_id == CS2_APP_ID and rich_presence:
+            if rich_presence and self.miniprofile_matches_current_game(snapshot, in_game):
+                snapshot.rich_presence = rich_presence
+            if self.config.monitor_cs2 and snapshot.game_id == CS2_APP_ID and snapshot.rich_presence:
                 snapshot.cs2_mode, snapshot.cs2_map, snapshot.cs2_score = parse_cs2_rich_presence(rich_presence)
 
         if self.config.monitor_friends:
