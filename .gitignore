@@ -1,8 +1,12 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.env
+
+# Config, state and logs
 config.ini
+steam_monitor_state.json
+account_logs/
 *.log
 *.tmp
-/__pycache__/
-*.pyc
-/.venv/
-.env
-*.json
